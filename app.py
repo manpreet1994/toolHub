@@ -2,7 +2,7 @@
 
 Run:  ADMIN_USER=me ADMIN_PASSWORD=change-me SECRET_KEY=$(openssl rand -hex 32) python app.py
 """
-import ast, importlib.util, json, os, re, secrets, shutil, sys, tempfile, zipfile
+import ast, importlib.util, json, os, re, secrets, shutil, sys, tempfile, traceback, zipfile
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -191,7 +191,19 @@ def serve_tool(slug, path):
     env = request.environ.copy()
     env["SCRIPT_NAME"] = request.script_root + f"/t/{slug}"
     env["PATH_INFO"] = "/" + path
-    return Response.from_app(load_wsgi(slug, d), env)
+    try:
+        return Response.from_app(load_wsgi(slug, d), env)
+    except Exception:
+        tb = traceback.format_exc()
+        app.logger.error(f"Error serving tool '{slug}':\n{tb}")
+        return render_template_string(
+            PAGE,
+            body=f"<div class=card style='border-color:#dc2626;background:rgba(220,38,38,0.05)'>"
+                 f"<h3 style='color:#dc2626;margin-top:0'>Error running tool: {meta.get('name', slug)}</h3>"
+                 f"<p><small>The tool encountered an unhandled exception:</small></p>"
+                 f"<pre style='overflow-x:auto;padding:10px;background:var(--card);border-radius:6px;font-size:13px;white-space:pre-wrap'>{tb}</pre>"
+                 f"<p><a class=t href='/admin'>&larr; Return to Admin</a></p></div>"
+        ), 500
 
 
 # ---------- dashboard ----------
