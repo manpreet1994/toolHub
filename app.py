@@ -93,7 +93,7 @@ def has_wsgi_entry(path):
     return False
 
 
-def install(fs, name=""):
+def install(fs, name="", target_slug=None):
     fname = (fs.filename or "").lower()
     tmp = Path(tempfile.mkdtemp())
     try:
@@ -127,15 +127,32 @@ def install(fs, name=""):
         if kind == "python" and not has_wsgi_entry(src / "app.py"):
             raise ValueError("app.py must define create_app(data_dir) or a top-level `app` (Flask/WSGI)")
 
-        title = name or meta.get("name") or Path(fs.filename).stem.replace("_", " ")
-        slug = slugify(meta.get("slug") or title)
-        dest = TOOLS / slug
+        if target_slug:
+            slug = target_slug
+            dest = TOOLS / slug
+            old_meta = json.loads((dest / "tool.json").read_text()) if (dest / "tool.json").exists() else {}
+            title = name or old_meta.get("name") or meta.get("name") or slug.replace("-", " ")
+            description = meta.get("description") or old_meta.get("description", "")
+        else:
+            title = name or meta.get("name") or Path(fs.filename).stem.replace("_", " ")
+            slug = slugify(meta.get("slug") or title)
+            description = meta.get("description", "")
+            dest = TOOLS / slug
+
+        (DATA / slug).mkdir(exist_ok=True)
         if dest.exists():
+            # Safety net: preserve any data files mistakenly stored inside tools/<slug>
+            for item in dest.iterdir():
+                if item.is_file() and item.name != "tool.json" and item.suffix in (".json", ".sqlite", ".sqlite3", ".db", ".csv"):
+                    dest_data_file = DATA / slug / item.name
+                    if not dest_data_file.exists():
+                        shutil.copy2(item, dest_data_file)
             shutil.rmtree(dest)
+
         _cache.pop(slug, None)
         shutil.copytree(src, dest)
         (dest / "tool.json").write_text(json.dumps(
-            {"name": title, "description": meta.get("description", ""), "type": kind}, indent=2))
+            {"name": title, "description": description, "type": kind}, indent=2))
         return slug
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -207,6 +224,22 @@ def upload():
         return redirect(url_for("admin"))
 
 
+@app.route("/update/<slug>", methods=["POST"])
+def update(slug):
+    d, meta = get_tool(slug)
+    f = request.files.get("file")
+    if not f or not f.filename:
+        flash("Choose a file to update")
+        return redirect(url_for("admin"))
+    try:
+        install(f, target_slug=slug)
+        flash(f"Updated '{meta.get('name', slug)}' successfully")
+        return redirect(url_for("admin"))
+    except (ValueError, SyntaxError, zipfile.BadZipFile, json.JSONDecodeError) as e:
+        flash(f"Update failed: {e}")
+        return redirect(url_for("admin"))
+
+
 @app.route("/delete/<slug>", methods=["POST"])
 def delete(slug):
     d, _ = get_tool(slug)
@@ -252,7 +285,15 @@ ADMIN_HOME = """<header><h2>ToolHub admin</h2>
   <a class=t href="/t/{{t.slug}}/">Open</a>
   <form action="/delete/{{t.slug}}" method=post onsubmit="return confirm('Delete {{t.name}}?')">
   <input type=hidden name=csrf value="{{session.csrf}}"><button>Delete</button></form>
-</div></div>
+</div>
+<details style="margin-top:10px">
+  <summary style="cursor:pointer;color:var(--ac);font-size:13px;font-weight:600">Update tool</summary>
+  <form action="/update/{{t.slug}}" method=post enctype="multipart/form-data" style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+    <input type=hidden name=csrf value="{{session.csrf}}">
+    <input type=file name=file required style="font-size:12px;padding:4px">
+    <button style="padding:4px 10px;font-size:13px">Upload & Update</button>
+  </form>
+</details></div>
 {% else %}<p>No tools yet. Upload one above.</p>{% endfor %}</div>"""
 
 TOOLS_PAGE = """<header><h2>Tool catalog</h2>
